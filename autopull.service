@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto-pull and rebuild wicktheory container
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=hana
+WorkingDirectory=/home/hana/candlestore_Gui
+ExecStart=/bin/bash /home/hana/candlestore_Gui/autopull.sh 60
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

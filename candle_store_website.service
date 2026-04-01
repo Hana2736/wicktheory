@@ -1,0 +1,12 @@
+[Unit]
+Description=Candle Store School Project
+After=network.target
+
+[Service]
+User=hana
+WorkingDirectory=/home/hana/candlestore_Gui
+ExecStart=/bin/bash /home/hana/candlestore_Gui/setup_and_run.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

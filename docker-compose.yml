@@ -1,0 +1,10 @@
+services:
+  candlestore:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6368:6368"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
