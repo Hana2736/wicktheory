@@ -77,9 +77,41 @@ def calculate_total(subtotal: float, tax: float, shipping_cost: float) -> float:
     return subtotal + tax + shipping_cost
 
 
-def render() -> None:
+def render_shop() -> None:
     st.title("🕯️ Wick Theory")
-    st.caption("Candle store project with sales-tax logic and a working shopping cart.")
+    st.caption("Candle store project — browse the full catalog, then head to your cart to check out.")
+
+    cart_count = sum(st.session_state.cart.values())
+    if cart_count:
+        st.info(f"You have **{cart_count}** item(s) in your cart. Open the Cart page from the sidebar to check out.")
+
+    st.subheader("Shop Candles")
+    product_cols = st.columns(3)
+    for index, product in enumerate(st.session_state.products):
+        with product_cols[index % 3]:
+            with st.container(border=True):
+                if product.get("image"):
+                    try:
+                        st.image(product["image"], use_container_width=True)
+                    except Exception:
+                        pass
+                st.markdown(f"### {product['name']}")
+                st.write(f"**Scent:** {product['scent']}")
+                st.write(f"**Size:** {product['size']}")
+                st.write(product["description"])
+                st.write(f"**Price:** {money(product['price'])}")
+                st.button(
+                    f"Add {product['name']} to cart",
+                    key=f"add_{product['id']}",
+                    on_click=add_to_cart,
+                    args=(product["id"],),
+                    use_container_width=True,
+                )
+
+
+def render_cart() -> None:
+    st.title("🕯️ Wick Theory")
+    st.caption("Your cart, tax breakdown, and checkout form.")
 
     st.sidebar.header("Checkout Settings")
     st.session_state.selected_state = st.sidebar.selectbox(
@@ -96,74 +128,47 @@ def render() -> None:
     selected_rate = get_tax_rate(st.session_state.selected_state)
     shipping_cost = SHIPPING_OPTIONS[st.session_state.shipping_method]
 
-    col1, col2 = st.columns([2, 1])
+    st.subheader("Your Cart")
 
-    with col1:
-        st.subheader("Shop Candles")
-        product_cols = st.columns(2)
+    if not st.session_state.cart:
+        st.info("Your cart is empty. Head to the Shop page to add a candle.")
+    else:
+        for product_id, quantity in list(st.session_state.cart.items()):
+            product = get_product(product_id)
+            if not product:
+                continue
 
-        for index, product in enumerate(st.session_state.products):
-            with product_cols[index % 2]:
-                with st.container(border=True):
-                    if product.get("image"):
-                        try:
-                            st.image(product["image"], use_container_width=True)
-                        except Exception:
-                            pass
-                    st.markdown(f"### {product['name']}")
-                    st.write(f"**Scent:** {product['scent']}")
-                    st.write(f"**Size:** {product['size']}")
-                    st.write(product["description"])
-                    st.write(f"**Price:** {money(product['price'])}")
-                    st.button(
-                        f"Add {product['name']} to cart",
-                        key=f"add_{product['id']}",
-                        on_click=add_to_cart,
-                        args=(product["id"],),
-                        use_container_width=True,
-                    )
+            with st.container(border=True):
+                cols = st.columns([3, 2, 1])
+                cols[0].write(f"**{product['name']}**")
+                cols[0].write(f"Unit price: {money(product['price'])}")
+                new_qty = cols[1].number_input(
+                    f"Quantity for {product['name']}",
+                    min_value=0,
+                    step=1,
+                    value=quantity,
+                    key=f"qty_{product_id}",
+                )
+                update_quantity(product_id, int(new_qty))
+                line_total = product["price"] * st.session_state.cart.get(product_id, 0)
+                cols[1].write(f"Line total: {money(line_total)}")
+                cols[2].button(
+                    "Remove",
+                    key=f"remove_{product_id}",
+                    on_click=remove_from_cart,
+                    args=(product_id,),
+                    use_container_width=True,
+                )
 
-    with col2:
-        st.subheader("Your Cart")
+    subtotal = calculate_subtotal()
+    tax = calculate_tax(subtotal, st.session_state.selected_state)
+    total = calculate_total(subtotal, tax, shipping_cost)
 
-        if not st.session_state.cart:
-            st.info("Your cart is empty. Add a candle to get started.")
-        else:
-            for product_id, quantity in list(st.session_state.cart.items()):
-                product = get_product(product_id)
-                if not product:
-                    continue
-
-                with st.container(border=True):
-                    st.write(f"**{product['name']}**")
-                    st.write(f"Unit price: {money(product['price'])}")
-                    new_qty = st.number_input(
-                        f"Quantity for {product['name']}",
-                        min_value=0,
-                        step=1,
-                        value=quantity,
-                        key=f"qty_{product_id}",
-                    )
-                    update_quantity(product_id, int(new_qty))
-                    line_total = product["price"] * st.session_state.cart.get(product_id, 0)
-                    st.write(f"Line total: {money(line_total)}")
-                    st.button(
-                        f"Remove {product['name']}",
-                        key=f"remove_{product_id}",
-                        on_click=remove_from_cart,
-                        args=(product_id,),
-                        use_container_width=True,
-                    )
-
-        subtotal = calculate_subtotal()
-        tax = calculate_tax(subtotal, st.session_state.selected_state)
-        total = calculate_total(subtotal, tax, shipping_cost)
-
-        st.markdown("---")
-        st.write(f"**Subtotal:** {money(subtotal)}")
-        st.write(f"**Sales tax ({selected_rate * 100:.2f}% - {st.session_state.selected_state}):** {money(tax)}")
-        st.write(f"**Shipping:** {money(shipping_cost)}")
-        st.write(f"## Total: {money(total)}")
+    st.markdown("---")
+    st.write(f"**Subtotal:** {money(subtotal)}")
+    st.write(f"**Sales tax ({selected_rate * 100:.2f}% - {st.session_state.selected_state}):** {money(tax)}")
+    st.write(f"**Shipping:** {money(shipping_cost)}")
+    st.write(f"## Total: {money(total)}")
 
     st.markdown("---")
     st.subheader("How the sales tax logic works")

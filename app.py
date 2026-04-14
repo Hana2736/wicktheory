@@ -26,7 +26,9 @@ def _sidebar_nav() -> str:
     else:
         st.sidebar.info("Browsing as guest")
 
-    options = ["Shop", "Account"]
+    cart_count = sum(st.session_state.cart.values()) if st.session_state.cart else 0
+    cart_label = f"Cart ({cart_count})" if cart_count else "Cart"
+    options = ["Shop", cart_label, "Account"]
     is_admin = (
         st.session_state.logged_in
         and st.session_state.users_db[st.session_state.current_user]["role"] == "admin"
@@ -63,7 +65,9 @@ def main() -> None:
         return
 
     if choice == "Shop":
-        cart.render()
+        cart.render_shop()
+    elif choice.startswith("Cart"):
+        cart.render_cart()
     elif choice == "Account":
         auth.render()
     elif choice == "Admin":
