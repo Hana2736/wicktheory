@@ -4,7 +4,8 @@ RUN pip install --no-cache-dir streamlit
 
 WORKDIR /app
 
-COPY app.py .
+COPY app.py admin.py auth.py cart.py data.py ./
+COPY assets ./assets
 
 RUN groupadd -g 1002 inksight && \
     useradd -u 1002 -g 1002 --create-home inksight && \
