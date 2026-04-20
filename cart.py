@@ -344,8 +344,8 @@ def render_cart() -> None:
 
         if clear_col.button("Remove", use_container_width=True):
             st.session_state.applied_coupon = None
-            st.session_state.coupon_input = ""
             st.info("Coupon removed.")
+            st.rerun()
 
         if st.session_state.applied_coupon:
             active_coupon = st.session_state.applied_coupon
@@ -460,7 +460,7 @@ total      = discounted + tax_amount + shipping_cost"""
                 # Clear cart and coupon
                 st.session_state.cart = {}
                 st.session_state.applied_coupon = None
-                st.session_state.coupon_input = ""
+                st.rerun()
 
                 st.success(
                     f"Thanks, {name}! Your demo order total is {money(checkout_total)}. "
