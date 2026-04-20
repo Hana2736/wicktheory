@@ -6,6 +6,7 @@ Every action mutates session state — users, orders, settings, products.
 
 import csv
 import io
+from datetime import datetime
 
 import streamlit as st
 
@@ -85,6 +86,53 @@ def _render_users() -> None:
 
 # ---------- Recent Orders ----------
 
+def _parse_order_date(order: dict):
+    """Best-effort parsing for order date values stored in different formats."""
+    raw_date = (
+        order.get("order_date")
+        or order.get("created_at")
+        or order.get("date")
+        or order.get("placed_at")
+    )
+
+    if not raw_date:
+        return None
+
+    if isinstance(raw_date, datetime):
+        return raw_date
+
+    if isinstance(raw_date, str):
+        # Try ISO first
+        try:
+            return datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+        # Try a few common string formats
+        date_formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%Y",
+            "%m-%d-%Y %H:%M:%S",
+            "%m-%d-%Y",
+        ]
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(raw_date, fmt)
+            except ValueError:
+                continue
+
+    return None
+
+
+def _format_order_date(order: dict) -> str:
+    dt = _parse_order_date(order)
+    if dt:
+        return dt.strftime("%Y-%m-%d %I:%M %p")
+    return "No date recorded"
+
+
 def _render_orders() -> None:
     with st.expander("Recent Orders", expanded=False):
         c1, c2, c3 = st.columns([3, 1, 1])
@@ -108,9 +156,83 @@ def _render_orders() -> None:
             st.info("No orders placed yet this session. Go to Shop then Cart to place one.")
             return
 
+        # Search / organization controls
+        st.markdown("**Search and Organize Orders**")
+        f1, f2 = st.columns([2, 1])
+
+        search_term = f1.text_input(
+            "Search by customer or email",
+            value="",
+            key="order_search_term",
+            placeholder="Type customer name or email...",
+        )
+
+        sort_option = f2.selectbox(
+            "Organize by",
+            [
+                "Newest Order Date",
+                "Oldest Order Date",
+                "Customer (A-Z)",
+                "Customer (Z-A)",
+                "Highest Dollar Amount",
+                "Lowest Dollar Amount",
+            ],
+            key="order_sort_option",
+        )
+
+        filtered_orders = orders
+
+        if search_term:
+            q = search_term.strip().lower()
+            filtered_orders = [
+                o for o in filtered_orders
+                if q in str(o.get("customer", "")).lower()
+                or q in str(o.get("email", "")).lower()
+            ]
+
+        if sort_option == "Newest Order Date":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: _parse_order_date(o) or datetime.min,
+                reverse=True,
+            )
+        elif sort_option == "Oldest Order Date":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: _parse_order_date(o) or datetime.max,
+            )
+        elif sort_option == "Customer (A-Z)":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: str(o.get("customer", "")).lower(),
+            )
+        elif sort_option == "Customer (Z-A)":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: str(o.get("customer", "")).lower(),
+                reverse=True,
+            )
+        elif sort_option == "Highest Dollar Amount":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: float(o.get("total", 0)),
+                reverse=True,
+            )
+        elif sort_option == "Lowest Dollar Amount":
+            filtered_orders = sorted(
+                filtered_orders,
+                key=lambda o: float(o.get("total", 0)),
+            )
+
+        st.caption(f"{len(filtered_orders)} matching order(s)")
+
+        if not filtered_orders:
+            st.warning("No orders match that search.")
+            return
+
         show_details = st.session_state.get("show_order_details", False)
-        for o in orders:
-            cols = st.columns([0.5, 2, 3, 2, 1.5])
+        for o in filtered_orders:
+            cols = st.columns([0.5, 2, 2.5, 2, 1.5, 2])
             cols[0].checkbox(" ", key=f"refund_select_{o['order_no']}", label_visibility="collapsed")
             cols[1].write(f"`{o['order_no']}`")
             cols[2].write(f"{o['customer']} — {len(o['items'])} item(s)")
@@ -118,9 +240,15 @@ def _render_orders() -> None:
             status = o.get("status", "paid")
             badge = "REFUNDED" if status == "refunded" else "PAID"
             cols[4].write(f"`{badge}`")
+            cols[5].write(_format_order_date(o))
+
             if show_details:
                 with st.container(border=True):
-                    st.caption(f"{o['email']}  ·  subtotal {money(o['subtotal'])}  ·  tax {money(o['tax'])}  ·  shipping {money(o['shipping'])}")
+                    st.caption(
+                        f"{o['email']}  ·  subtotal {money(o['subtotal'])}  ·  "
+                        f"tax {money(o['tax'])}  ·  shipping {money(o['shipping'])}  ·  "
+                        f"date {_format_order_date(o)}"
+                    )
                     for pid, qty in o["items"].items():
                         st.write(f"- {pid} × {qty}")
 
@@ -212,6 +340,123 @@ def _render_items() -> None:
                 col4.write(f"Stock: {p['stock']}")
 
 
+# ---------- Discount Codes ----------
+
+def _render_discounts() -> None:
+    with st.expander("Discount Codes", expanded=False):
+        if "discount_codes" not in st.session_state:
+            st.session_state.discount_codes = []
+
+        c1, c2, c3 = st.columns([3, 1, 1])
+        if c2.button("Add Code", key="discount_add_btn"):
+            st.session_state.show_add_discount = not st.session_state.get("show_add_discount", False)
+        if c3.button("Edit Codes", key="discount_edit_btn"):
+            st.session_state.discount_edit_mode = not st.session_state.get("discount_edit_mode", False)
+
+        if st.session_state.get("show_add_discount"):
+            with st.form("add_discount_form", clear_on_submit=True):
+                st.markdown("**Add a new discount code**")
+                code = st.text_input("Code").strip().upper()
+                discount_type = st.selectbox("Discount Type", ["percent", "fixed"])
+                value = st.number_input("Discount Value", min_value=0.0, value=10.0, step=1.0)
+                min_order = st.number_input("Minimum Order Amount", min_value=0.0, value=0.0, step=1.0)
+                active = st.checkbox("Active", value=True)
+
+                submitted = st.form_submit_button("Create code")
+                if submitted:
+                    if not code:
+                        st.error("Code is required.")
+                    elif any(d["code"] == code for d in st.session_state.discount_codes):
+                        st.error("That discount code already exists.")
+                    else:
+                        st.session_state.discount_codes.append({
+                            "code": code,
+                            "type": discount_type,
+                            "value": float(value),
+                            "min_order": float(min_order),
+                            "active": active,
+                        })
+                        st.success(f"Added discount code {code}.")
+                        st.session_state.show_add_discount = False
+                        st.rerun()
+
+        st.divider()
+        st.caption(f"{len(st.session_state.discount_codes)} discount code(s) available")
+        edit_mode = st.session_state.get("discount_edit_mode", False)
+
+        if not st.session_state.discount_codes:
+            st.info("No discount codes created yet.")
+            return
+
+        for d in list(st.session_state.discount_codes):
+            if edit_mode:
+                with st.container(border=True):
+                    cols = st.columns([2, 2, 1.5, 1.5, 1, 1])
+                    new_code = cols[0].text_input(
+                        "code",
+                        value=d["code"],
+                        key=f"disc_code_{d['code']}",
+                        label_visibility="collapsed",
+                    ).strip().upper()
+                    new_type = cols[1].selectbox(
+                        "type",
+                        ["percent", "fixed"],
+                        index=0 if d["type"] == "percent" else 1,
+                        key=f"disc_type_{d['code']}",
+                        label_visibility="collapsed",
+                    )
+                    new_value = cols[2].number_input(
+                        "value",
+                        value=float(d["value"]),
+                        min_value=0.0,
+                        step=1.0,
+                        key=f"disc_value_{d['code']}",
+                        label_visibility="collapsed",
+                    )
+                    new_min_order = cols[3].number_input(
+                        "min_order",
+                        value=float(d.get("min_order", 0.0)),
+                        min_value=0.0,
+                        step=1.0,
+                        key=f"disc_min_{d['code']}",
+                        label_visibility="collapsed",
+                    )
+                    new_active = cols[4].checkbox(
+                        "active",
+                        value=bool(d.get("active", True)),
+                        key=f"disc_active_{d['code']}",
+                        label_visibility="collapsed",
+                    )
+
+                    if cols[5].button("Save", key=f"save_disc_{d['code']}"):
+                        if not new_code:
+                            st.error("Code cannot be empty.")
+                        elif new_code != d["code"] and any(x["code"] == new_code for x in st.session_state.discount_codes):
+                            st.error("Another discount code already uses that code.")
+                        else:
+                            d["code"] = new_code
+                            d["type"] = new_type
+                            d["value"] = float(new_value)
+                            d["min_order"] = float(new_min_order)
+                            d["active"] = new_active
+                            st.toast(f"Saved {new_code}.")
+                            st.rerun()
+
+                del_col = st.columns([5, 1])
+                if del_col[1].button("Delete", key=f"delete_disc_{d['code']}"):
+                    st.session_state.discount_codes = [
+                        x for x in st.session_state.discount_codes if x["code"] != d["code"]
+                    ]
+                    st.rerun()
+            else:
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 1.5, 1.5, 1])
+                col1.write(f"**{d['code']}**")
+                col2.write("Percent Off" if d["type"] == "percent" else "Fixed Amount")
+                col3.write(f"{d['value']}%" if d["type"] == "percent" else money(d["value"]))
+                col4.write(f"Min: {money(d.get('min_order', 0.0))}")
+                col5.write("Active" if d.get("active", True) else "Inactive")
+
+
 def render() -> None:
     st.title("Admin Panel")
     st.caption("Wick Theory")
@@ -219,3 +464,4 @@ def render() -> None:
     _render_orders()
     _render_settings()
     _render_items()
+    _render_discounts()

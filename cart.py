@@ -9,11 +9,13 @@ form). Integration changes only:
 - checkout form prefills from the signed-in user, if any
 
 Added features:
-- Discount code application (WELCOME10, CANDLE20, FREESHIP)
+- Discount code application from admin-managed discount codes
 - Search by name/scent/description on the Shop page
 - Sort by price (low/high) and availability on the Shop page
 - Stock deduction on successful checkout
 """
+
+from datetime import datetime
 
 import streamlit as st
 
@@ -40,8 +42,12 @@ def initialize_state() -> None:
         st.session_state.products = [dict(p) for p in PRODUCTS]
     if "settings" not in st.session_state:
         st.session_state.settings = dict(DEFAULT_SETTINGS)
+    if "discount_codes" not in st.session_state:
+        st.session_state.discount_codes = []
     if "applied_coupon" not in st.session_state:
-        st.session_state.applied_coupon = None   # (code, rate) tuple or None
+        st.session_state.applied_coupon = None
+    if "coupon_input" not in st.session_state:
+        st.session_state.coupon_input = ""
 
 
 def add_to_cart(product_id: str) -> None:
@@ -86,20 +92,70 @@ def calculate_tax(subtotal: float, state_name: str) -> float:
     return subtotal * get_tax_rate(state_name)
 
 
-def calculate_discount(subtotal: float, coupon_code: str | None) -> tuple[float, float]:
+def get_discount_code(code: str | None):
+    """Look up a discount code from admin-managed session state first,
+    then fall back to legacy hardcoded DISCOUNT_CODES."""
+    if not code:
+        return None
+
+    normalized = code.strip().upper()
+
+    for discount in st.session_state.get("discount_codes", []):
+        if str(discount.get("code", "")).strip().upper() == normalized:
+            return discount
+
+    # fallback support for legacy hardcoded codes
+    legacy_rate = DISCOUNT_CODES.get(normalized)
+    if legacy_rate is not None:
+        if normalized == "FREESHIP":
+            return {
+                "code": normalized,
+                "type": "shipping",
+                "value": 0.0,
+                "min_order": 0.0,
+                "active": True,
+            }
+        return {
+            "code": normalized,
+            "type": "percent",
+            "value": float(legacy_rate) * 100.0,
+            "min_order": 0.0,
+            "active": True,
+        }
+
+    return None
+
+
+def calculate_discount(subtotal: float, coupon_data) -> tuple[float, float]:
     """Return (discount_amount, effective_shipping_override).
-    
-    Returns (discount_off_subtotal, 0.0) for percent-off codes.
-    Returns (0.0, -1.0) sentinel for FREESHIP (caller sets shipping to 0).
+
+    Returns:
+    - (discount_off_subtotal, 0.0) for percent/fixed discounts
+    - (0.0, -1.0) sentinel for free shipping
     """
-    if not coupon_code:
+    if not coupon_data:
         return 0.0, 0.0
-    rate = DISCOUNT_CODES.get(coupon_code.upper(), None)
-    if rate is None:
+
+    if not coupon_data.get("active", True):
         return 0.0, 0.0
-    if coupon_code.upper() == "FREESHIP":
-        return 0.0, -1.0   # sentinel: free shipping
-    return subtotal * rate, 0.0
+
+    min_order = float(coupon_data.get("min_order", 0.0))
+    if subtotal < min_order:
+        return 0.0, 0.0
+
+    discount_type = str(coupon_data.get("type", "percent")).lower()
+    value = float(coupon_data.get("value", 0.0))
+
+    if coupon_data.get("code", "").strip().upper() == "FREESHIP" or discount_type == "shipping":
+        return 0.0, -1.0
+
+    if discount_type == "fixed":
+        discount_amount = value
+    else:
+        discount_amount = subtotal * (value / 100.0)
+
+    discount_amount = max(0.0, min(discount_amount, subtotal))
+    return discount_amount, 0.0
 
 
 def calculate_total(subtotal: float, discount: float, tax: float, shipping_cost: float) -> float:
@@ -254,43 +310,85 @@ def render_cart() -> None:
     coupons_allowed = st.session_state.settings.get("allow_coupons", True)
     if not coupons_allowed:
         st.caption("Coupon codes are currently disabled.")
+        st.session_state.applied_coupon = None
     else:
         coupon_col, btn_col, clear_col = st.columns([3, 1, 1])
         coupon_input = coupon_col.text_input(
             "Enter coupon code",
+            key="coupon_input",
             label_visibility="collapsed",
-            placeholder="e.g. WELCOME10",
+            placeholder="e.g. SAVE10",
         )
+
         if btn_col.button("Apply", use_container_width=True):
             code = coupon_input.strip().upper()
-            if code in DISCOUNT_CODES:
-                st.session_state.applied_coupon = code
-                st.success(f"Coupon **{code}** applied!")
-            else:
+            discount_data = get_discount_code(code)
+
+            if not code:
+                st.error("Enter a coupon code.")
+            elif not discount_data:
+                st.session_state.applied_coupon = None
                 st.error("Invalid coupon code.")
+            elif not discount_data.get("active", True):
+                st.session_state.applied_coupon = None
+                st.error("That coupon code is inactive.")
+            elif subtotal < float(discount_data.get("min_order", 0.0)):
+                st.session_state.applied_coupon = None
+                st.error(
+                    f"This code requires a minimum order of "
+                    f"{money(float(discount_data.get('min_order', 0.0)))}."
+                )
+            else:
+                st.session_state.applied_coupon = discount_data
+                st.success(f"Coupon **{discount_data['code']}** applied!")
+
         if clear_col.button("Remove", use_container_width=True):
             st.session_state.applied_coupon = None
+            st.session_state.coupon_input = ""
             st.info("Coupon removed.")
 
         if st.session_state.applied_coupon:
-            st.caption(f"Active coupon: **{st.session_state.applied_coupon}**")
+            active_coupon = st.session_state.applied_coupon
+            active_code = active_coupon.get("code", "")
+            active_type = active_coupon.get("type", "percent")
+            active_value = float(active_coupon.get("value", 0.0))
+            min_order = float(active_coupon.get("min_order", 0.0))
+
+            if active_code.upper() == "FREESHIP" or active_type == "shipping":
+                st.caption(f"Active coupon: **{active_code}** (free shipping)")
+            elif active_type == "fixed":
+                st.caption(
+                    f"Active coupon: **{active_code}** "
+                    f"(-{money(active_value)}, min order {money(min_order)})"
+                )
+            else:
+                st.caption(
+                    f"Active coupon: **{active_code}** "
+                    f"(-{active_value:.0f}%, min order {money(min_order)})"
+                )
 
     # ---- Totals ----
     applied = st.session_state.applied_coupon if coupons_allowed else None
     discount_amount, ship_override = calculate_discount(subtotal, applied)
 
     effective_shipping = 0.0 if ship_override == -1.0 else shipping_cost
-    tax = calculate_tax(max(0.0, subtotal - discount_amount), st.session_state.selected_state)
+    taxable_subtotal = max(0.0, subtotal - discount_amount)
+    tax = calculate_tax(taxable_subtotal, st.session_state.selected_state)
     total = calculate_total(subtotal, discount_amount, tax, effective_shipping)
 
     st.markdown("---")
     st.write(f"**Subtotal:** {money(subtotal)}")
-    if discount_amount > 0:
-        st.write(f"**Discount ({applied}):** -{money(discount_amount)}")
+    if discount_amount > 0 and applied:
+        st.write(f"**Discount ({applied.get('code', '')}):** -{money(discount_amount)}")
+    else:
+        st.write("**Discount:** $0.00")
+
     if ship_override == -1.0:
-        st.write(f"**Shipping:** ~~{money(shipping_cost)}~~ FREE (coupon applied)")
+        coupon_name = applied.get("code", "coupon") if applied else "coupon"
+        st.write(f"**Shipping:** ~~{money(shipping_cost)}~~ FREE ({coupon_name} applied)")
     else:
         st.write(f"**Shipping:** {money(effective_shipping)}")
+
     st.write(f"**Sales tax ({selected_rate * 100:.2f}% — {st.session_state.selected_state}):** {money(tax)}")
     st.write(f"## Total: {money(total)}")
 
@@ -330,6 +428,14 @@ total      = discounted + tax_amount + shipping_cost"""
             elif not name or not email or not address:
                 st.error("Please fill in your name, email, and shipping address.")
             else:
+                # Revalidate coupon at checkout time
+                checkout_coupon = st.session_state.applied_coupon if coupons_allowed else None
+                checkout_discount, checkout_ship_override = calculate_discount(subtotal, checkout_coupon)
+                checkout_shipping = 0.0 if checkout_ship_override == -1.0 else shipping_cost
+                checkout_taxable_subtotal = max(0.0, subtotal - checkout_discount)
+                checkout_tax = calculate_tax(checkout_taxable_subtotal, st.session_state.selected_state)
+                checkout_total = calculate_total(subtotal, checkout_discount, checkout_tax, checkout_shipping)
+
                 order_no = f"WCT-2026-{10500 + len(st.session_state.orders):07d}"
 
                 # Deduct stock before clearing the cart
@@ -341,19 +447,22 @@ total      = discounted + tax_amount + shipping_cost"""
                     "email": email,
                     "items": dict(st.session_state.cart),
                     "subtotal": subtotal,
-                    "discount": discount_amount,
-                    "coupon": applied,
-                    "tax": tax,
-                    "shipping": effective_shipping,
-                    "total": total,
+                    "discount": checkout_discount,
+                    "coupon": checkout_coupon.get("code") if checkout_coupon else None,
+                    "coupon_code": checkout_coupon.get("code") if checkout_coupon else None,
+                    "tax": checkout_tax,
+                    "shipping": checkout_shipping,
+                    "total": checkout_total,
                     "status": "paid",
+                    "order_date": datetime.now().isoformat(),
                 })
 
                 # Clear cart and coupon
                 st.session_state.cart = {}
                 st.session_state.applied_coupon = None
+                st.session_state.coupon_input = ""
 
                 st.success(
-                    f"Thanks, {name}! Your demo order total is {money(total)}. "
+                    f"Thanks, {name}! Your demo order total is {money(checkout_total)}. "
                     "This school-project version does not process real payments."
                 )
